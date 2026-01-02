@@ -8,6 +8,8 @@ DATASTORE_DIR="${DATASTORE_DIR:-$SCRIPT_DIR/datastore}"
 SPEC_DIR="${SPEC_DIR:-$SCRIPT_DIR/spec}"
 SPEC_FILE="${SPEC_FILE:-}"
 VERSION_FILE="$DATA_DIR/velociraptor-version.json"
+SPEC_SOURCE_REPO="${SPEC_SOURCE_REPO:-julianghill/velociraptor-triage}"
+SPEC_SOURCE_REF="${SPEC_SOURCE_REF:-main}"
 
 WINDOWS_TARGETS_URL="https://triage.velocidex.com/docs/windows.triage.targets/Windows.Triage.Targets.zip"
 WINDOWS_TARGETS_ZIP="$SCRIPT_DIR/Windows.Triage.Targets.zip"
@@ -102,14 +104,20 @@ ensure_local_specs() {
   fi
 
   if [ ! -d "$SPEC_DIR" ]; then
-    log "Error: spec directory not found at $SPEC_DIR"
-    exit 1
+    log "Spec directory not found at $SPEC_DIR; creating it."
+    mkdir -p "$SPEC_DIR"
   fi
 
   mapfile -t SPEC_FILES < <(find "$SPEC_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) | sort)
 
   if [ ${#SPEC_FILES[@]} -eq 0 ]; then
-    log "Error: No spec files (*.yaml/ *.yml) found under $SPEC_DIR"
+    log "No local spec files found under $SPEC_DIR; attempting to fetch from GitHub ($SPEC_SOURCE_REPO @ $SPEC_SOURCE_REF)"
+    fetch_specs_from_github || log "Warning: Unable to fetch specs from GitHub."
+    mapfile -t SPEC_FILES < <(find "$SPEC_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) | sort)
+  fi
+
+  if [ ${#SPEC_FILES[@]} -eq 0 ]; then
+    log "Error: No spec files (*.yaml/ *.yml) available. Check SPEC_DIR or SPEC_FILE settings."
     exit 1
   fi
 
@@ -148,6 +156,29 @@ ensure_linux_avml() {
   fi
   log "Downloading Linux AVML artifact..."
   download_with_retry "$LINUX_AVML_URL" "$LINUX_AVML_FILE"
+}
+
+fetch_specs_from_github() {
+  local api_url="https://api.github.com/repos/$SPEC_SOURCE_REPO/contents/spec?ref=$SPEC_SOURCE_REF"
+  mkdir -p "$SPEC_DIR"
+
+  local listing
+  listing=$(fetch_with_retry "$api_url") || return 1
+
+  mapfile -t remote_specs < <(echo "$listing" | jq -r '.[] | select(.type=="file") | select(.name | test("\\.(yaml|yml)$")) | .download_url')
+
+  if [ ${#remote_specs[@]} -eq 0 ]; then
+    log "No remote spec files found in $SPEC_SOURCE_REPO at ref $SPEC_SOURCE_REF"
+    return 1
+  fi
+
+  for url in "${remote_specs[@]}"; do
+    local fname="${url##*/}"
+    log "Downloading spec $fname from GitHub"
+    if ! curl -L "$url" -o "$SPEC_DIR/$fname" --fail --silent --show-error; then
+      log "Warning: failed to download $fname"
+    fi
+  done
 }
 
 log "Starting createCollectors.sh (spec directory mode)..."
