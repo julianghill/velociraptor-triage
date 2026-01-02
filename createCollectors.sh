@@ -1,4 +1,5 @@
 #!/bin/bash
+# Based on the triage.zip collector workflow by Digital-Defense-Institute (https://github.com/Digital-Defense-Institute/triage.zip)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,6 +11,7 @@ SPEC_FILE="${SPEC_FILE:-}"
 VERSION_FILE="$DATA_DIR/velociraptor-version.json"
 SPEC_SOURCE_REPO="${SPEC_SOURCE_REPO:-julianghill/velociraptor-triage}"
 SPEC_SOURCE_REF="${SPEC_SOURCE_REF:-main}"
+COLLECTOR_OUTPUT_DIR="${COLLECTOR_OUTPUT_DIR:-$PWD/collectors}"
 
 WINDOWS_TARGETS_URL="https://triage.velocidex.com/docs/windows.triage.targets/Windows.Triage.Targets.zip"
 WINDOWS_TARGETS_ZIP="$SCRIPT_DIR/Windows.Triage.Targets.zip"
@@ -183,9 +185,11 @@ fetch_specs_from_github() {
 
 log "Starting createCollectors.sh (spec directory mode)..."
 
-mkdir -p "$DATA_DIR" "$DATASTORE_DIR"
+mkdir -p "$DATA_DIR" "$DATASTORE_DIR" "$COLLECTOR_OUTPUT_DIR"
 
 ensure_local_specs
+
+log "Collectors will be written to $COLLECTOR_OUTPUT_DIR"
 
 response=$(fetch_with_retry "https://api.github.com/repos/Velocidex/velociraptor/releases/latest") || exit 1
 
@@ -286,5 +290,7 @@ fi
 
 for spec_path in "${SPEC_FILES[@]}"; do
   log "Building collector for $spec_path"
-  "$VELO_BINARY" collector --datastore "$DATASTORE_DIR/" "$spec_path"
+  (cd "$COLLECTOR_OUTPUT_DIR" && "$VELO_BINARY" collector --datastore "$DATASTORE_DIR/" "$spec_path")
 done
+
+log "Collectors written to $COLLECTOR_OUTPUT_DIR"
