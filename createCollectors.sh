@@ -15,10 +15,19 @@ SPEC_SOURCE_REF="${SPEC_SOURCE_REF:-main}"
 COLLECTOR_OUTPUT_DIR="${COLLECTOR_OUTPUT_DIR:-}"
 SPEC_OUTPUT="${SPEC_OUTPUT:-}"
 SPEC_ONLY=0
+BUILD_AGENTS=0
+AGENTS_ONLY=0
+AGENT_OUTPUT_DIR="${AGENT_OUTPUT_DIR:-}"
+AGENT_ORG="${AGENT_ORG:-root}"
+AGENT_LINUX_BINARY="${AGENT_LINUX_BINARY:-}"
+AGENT_WINDOWS_BINARY="${AGENT_WINDOWS_BINARY:-}"
+SERVER_CONFIG="${SERVER_CONFIG:-}"
 SFTP_HOST=""
 SFTP_USER=""
 SFTP_KEY_PATH=""
 SFTP_REMOTE_DIR=""
+velociraptor_version=""
+release_response=""
 
 WINDOWS_TARGETS_URL="https://triage.velocidex.com/docs/windows.triage.targets/Windows.Triage.Targets.zip"
 LINUX_UAC_URL="https://triage.velocidex.com/docs/linux.triage.uac/Linux.Triage.UAC.zip"
@@ -29,17 +38,41 @@ log() {
   echo "$@" >&2
 }
 
+resolve_path() {
+  local path="$1"
+  if [ -z "$path" ]; then
+    return
+  fi
+  if [ ! -e "$path" ]; then
+    echo "$path"
+    return
+  fi
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$path"
+  else
+    (cd "$(dirname "$path")" && printf "%s/%s\n" "$(pwd)" "$(basename "$path")")
+  fi
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage: createCollectors.sh [flags]
   --spec-only                   Render spec(s) with overrides and exit (no collector build)
+  --build-agents                Build Velociraptor client agents (Linux + Windows)
+  --agents-only                 Build agents only (skip collectors/specs)
   --sftp-host <host[:port]>     SFTP host (optional port; defaults to :22 if omitted)
   --sftp-user <user>            SFTP username
   --sftp-key-path <path>        Path to private key file to embed/reference
   --sftp-remote-dir <dir>       Remote directory for uploads
-  --workdir <path>              Working directory (default: mktemp)
-  --output-dir <path>           Where to write collectors (default: <workdir>/dist)
+  --workdir <path>              Working directory (default: repo directory)
+  --output-dir <path>           Where to write collectors (default: <workdir>/collectors)
   --spec-output <path>          Where to write rendered spec in --spec-only mode (default: <workdir>/spec.yaml)
+  --velo-binary <path>          Path to Velociraptor CLI binary to use
+  --server-config <path>        Path to server.config.yaml for agent repacking
+  --agent-output-dir <path>     Where to write repacked agents (default: <workdir>/agents)
+  --agent-org <name>            Org name for client config (default: root)
+  --agent-linux-binary <path>   Linux Velociraptor binary to repack (default: --velo-binary)
+  --agent-windows-binary <path> Windows Velociraptor binary to repack (downloaded if missing)
   -h | --help                   Show this help
 EOF
   exit 1
@@ -49,6 +82,12 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --spec-only)
       SPEC_ONLY=1
+      ;;
+    --build-agents)
+      BUILD_AGENTS=1
+      ;;
+    --agents-only)
+      AGENTS_ONLY=1
       ;;
     --sftp-host)
       SFTP_HOST="${2:-}"; shift
@@ -78,6 +117,30 @@ while [[ $# -gt 0 ]]; do
       SPEC_OUTPUT="${2:-}"; shift
       [ -n "$SPEC_OUTPUT" ] || usage
       ;;
+    --velo-binary)
+      VELO_BINARY="${2:-}"; shift
+      [ -n "$VELO_BINARY" ] || usage
+      ;;
+    --server-config)
+      SERVER_CONFIG="${2:-}"; shift
+      [ -n "$SERVER_CONFIG" ] || usage
+      ;;
+    --agent-output-dir)
+      AGENT_OUTPUT_DIR="${2:-}"; shift
+      [ -n "$AGENT_OUTPUT_DIR" ] || usage
+      ;;
+    --agent-org)
+      AGENT_ORG="${2:-}"; shift
+      [ -n "$AGENT_ORG" ] || usage
+      ;;
+    --agent-linux-binary)
+      AGENT_LINUX_BINARY="${2:-}"; shift
+      [ -n "$AGENT_LINUX_BINARY" ] || usage
+      ;;
+    --agent-windows-binary)
+      AGENT_WINDOWS_BINARY="${2:-}"; shift
+      [ -n "$AGENT_WINDOWS_BINARY" ] || usage
+      ;;
     -h|--help)
       usage
       ;;
@@ -95,6 +158,8 @@ else
   mkdir -p "$WORKDIR"
 fi
 
+WORKDIR=$(resolve_path "$WORKDIR")
+
 DATA_DIR="${DATA_DIR:-$WORKDIR/data}"
 DATASTORE_DIR="${DATASTORE_DIR:-$WORKDIR/datastore}"
 SPEC_DIR="${SPEC_DIR:-$SCRIPT_DIR/spec}"
@@ -110,7 +175,16 @@ LINUX_UAC_FILE="${LINUX_UAC_FILE:-$LINUX_UAC_DIR/Linux.Triage.UAC.yaml}"
 LINUX_AVML_DIR="${LINUX_AVML_DIR:-$DATASTORE_DIR/artifact_definitions/Linux/Memory}"
 LINUX_AVML_FILE="${LINUX_AVML_FILE:-$LINUX_AVML_DIR/Linux.Memory.AVML.yaml}"
 SERVER_CONFIG="${SERVER_CONFIG:-$WORKDIR/server.config.yaml}"
+AGENT_OUTPUT_DIR="${AGENT_OUTPUT_DIR:-$WORKDIR/agents}"
 RENDERED_SPEC_DIR="$WORKDIR/rendered_specs"
+
+SERVER_CONFIG=$(resolve_path "$SERVER_CONFIG")
+if [ -n "$AGENT_LINUX_BINARY" ]; then
+  AGENT_LINUX_BINARY=$(resolve_path "$AGENT_LINUX_BINARY")
+fi
+if [ -n "$AGENT_WINDOWS_BINARY" ]; then
+  AGENT_WINDOWS_BINARY=$(resolve_path "$AGENT_WINDOWS_BINARY")
+fi
 
 SFTP_ENDPOINT="$SFTP_HOST"
 DO_SFTP_INJECT=0
@@ -174,6 +248,178 @@ download_with_retry() {
   
   log "Error: Failed to download binary after $max_retries attempts"
   return 1
+}
+
+detect_velo_version() {
+  local bin="$1"
+  local version=""
+  if [ -x "$bin" ]; then
+    version=$("$bin" version 2>/dev/null | awk -F': ' '/^version:/ {print $2; exit}')
+  fi
+  if [ -z "$version" ]; then
+    version=$(basename "$bin" | sed -n 's/.*velociraptor-v\([0-9.]*\).*/\1/p')
+  fi
+  echo "$version"
+}
+
+fetch_release_info() {
+  if [ -n "$release_response" ]; then
+    return 0
+  fi
+  release_response=$(fetch_with_retry "https://api.github.com/repos/Velocidex/velociraptor/releases/latest") || exit 1
+}
+
+get_asset_url_by_name() {
+  local name="$1"
+  echo "$release_response" | jq -r --arg name "$name" '.assets[] | select(.name==$name) | .browser_download_url' | head -n1
+}
+
+ensure_velo_binary() {
+  local have_binary=0
+  if [ -n "$VELO_BINARY" ] && [ -f "$VELO_BINARY" ]; then
+    VELO_BINARY=$(resolve_path "$VELO_BINARY")
+    have_binary=1
+    chmod +x "$VELO_BINARY" 2>/dev/null || true
+    velociraptor_version=$(detect_velo_version "$VELO_BINARY")
+    if [ -n "$velociraptor_version" ]; then
+      log "Using provided Velociraptor binary ($VELO_BINARY) version $velociraptor_version"
+    fi
+  fi
+
+  if [ -z "$velociraptor_version" ]; then
+    fetch_release_info
+    if [ -z "$release_response" ]; then
+      log "Error: Empty response from GitHub API"
+      exit 1
+    fi
+
+    asset_info=$(echo "$release_response" | jq -r '[.assets[] | select((.name | test("velociraptor-.*-linux-amd64$")) and (.name | contains("musl") | not)) | {name: .name, url: .browser_download_url}] | sort_by(.name) | last')
+    download_url=$(echo "$asset_info" | jq -r '.url')
+    asset_name=$(echo "$asset_info" | jq -r '.name')
+
+    if [ -z "$download_url" ] || [ "$download_url" == "null" ]; then
+      log "Error: Could not find a Linux AMD64 binary in the latest release"
+      log "Debug - Available assets:"
+      echo "$release_response" | jq -r '.assets[].name' >&2
+      exit 1
+    fi
+
+    binary_version=$(echo "$asset_name" | sed -n 's/.*velociraptor-v\([0-9.]*\)-linux-amd64$/\1/p')
+    velociraptor_version=${binary_version:-$(echo "$release_response" | jq -r '.tag_name' | sed 's/^v//')}
+  fi
+
+  if [ -z "$velociraptor_version" ] || [ "$velociraptor_version" == "null" ]; then
+    log "Error: Unable to determine Velociraptor version"
+    exit 1
+  fi
+
+  log "Velociraptor release version: $velociraptor_version"
+
+  stored_version="unknown"
+  if [ -f "$VERSION_FILE" ]; then
+    stored_version=$(jq -r '.velociraptor_version // "unknown"' "$VERSION_FILE" 2>/dev/null || echo "unknown")
+  fi
+
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "VELO_VERSION=$velociraptor_version" >> "$GITHUB_ENV"
+  fi
+
+  if [ "$stored_version" = "$velociraptor_version" ] && [ -n "${SKIP_IF_VERSION_UNCHANGED:-}" ]; then
+    echo "Velociraptor version unchanged ($velociraptor_version); skipping build."
+    if [ -n "${GITHUB_ENV:-}" ]; then
+      echo "VELO_VERSION_CHANGED=false" >> "$GITHUB_ENV"
+    fi
+    exit 0
+  fi
+
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "VELO_VERSION_CHANGED=true" >> "$GITHUB_ENV"
+  fi
+
+  mkdir -p "$DATA_DIR"
+  cat <<EOF > "$VERSION_FILE"
+{
+  "velociraptor_version": "$velociraptor_version"
+}
+EOF
+
+  if [ $have_binary -eq 1 ]; then
+    return 0
+  fi
+
+  fetch_release_info
+  download_url=$(echo "$release_response" | jq -r --arg version "$velociraptor_version" '.assets[] | select(.name == ("velociraptor-v" + $version + "-linux-amd64")) | .browser_download_url' | head -n1)
+
+  if [ -z "$download_url" ] || [ "$download_url" == "null" ]; then
+    log "Error: Could not find Linux AMD64 binary for version $velociraptor_version"
+    exit 1
+  fi
+
+  log "Downloading Velociraptor binary from: $download_url"
+  download_with_retry "$download_url" "$VELO_BINARY" || exit 1
+  chmod +x "$VELO_BINARY"
+}
+
+ensure_agent_windows_binary() {
+  if [ -n "$AGENT_WINDOWS_BINARY" ] && [ -f "$AGENT_WINDOWS_BINARY" ]; then
+    return 0
+  fi
+
+  fetch_release_info
+  if [ -z "$velociraptor_version" ]; then
+    log "Error: Velociraptor version not set; cannot download Windows agent binary."
+    exit 1
+  fi
+
+  windows_name="velociraptor-v${velociraptor_version}-windows-amd64.exe"
+  windows_url=$(get_asset_url_by_name "$windows_name")
+  if [ -z "$windows_url" ] || [ "$windows_url" == "null" ]; then
+    log "Error: Could not find Windows binary $windows_name in release assets. Provide --agent-windows-binary."
+    exit 1
+  fi
+
+  AGENT_WINDOWS_BINARY="$WORKDIR/$windows_name"
+  log "Downloading Windows agent binary from: $windows_url"
+  download_with_retry "$windows_url" "$AGENT_WINDOWS_BINARY" || exit 1
+}
+
+build_agents() {
+  if [ ! -f "$SERVER_CONFIG" ]; then
+    log "Error: server.config.yaml not found at $SERVER_CONFIG"
+    exit 1
+  fi
+
+  if [ ! -f "$VELO_BINARY" ]; then
+    log "Error: Velociraptor binary not found at $VELO_BINARY"
+    exit 1
+  fi
+
+  if [ -z "$AGENT_LINUX_BINARY" ]; then
+    AGENT_LINUX_BINARY="$VELO_BINARY"
+  fi
+
+  if [ ! -f "$AGENT_LINUX_BINARY" ]; then
+    log "Error: Linux agent binary not found at $AGENT_LINUX_BINARY"
+    exit 1
+  fi
+
+  ensure_agent_windows_binary
+
+  mkdir -p "$AGENT_OUTPUT_DIR"
+  client_config="$AGENT_OUTPUT_DIR/client.${AGENT_ORG}.config.yaml"
+  log "Generating client config for org '$AGENT_ORG'"
+  "$VELO_BINARY" config client --org "$AGENT_ORG" --config "$SERVER_CONFIG" > "$client_config"
+
+  linux_out="$AGENT_OUTPUT_DIR/velociraptor-client-linux-amd64"
+  windows_out="$AGENT_OUTPUT_DIR/velociraptor-client-windows-amd64.exe"
+
+  log "Repacking Linux client binary -> $linux_out"
+  "$VELO_BINARY" config repack --exe "$AGENT_LINUX_BINARY" "$client_config" "$linux_out"
+
+  log "Repacking Windows client binary -> $windows_out"
+  "$VELO_BINARY" config repack --exe "$AGENT_WINDOWS_BINARY" "$client_config" "$windows_out"
+
+  log "Agents written to $AGENT_OUTPUT_DIR"
 }
 
 validate_sftp_flags() {
@@ -365,155 +611,127 @@ EOF
 
 log "Starting createCollectors.sh (spec directory mode) in $WORKDIR"
 
-mkdir -p "$DATA_DIR" "$DATASTORE_DIR" "$COLLECTOR_OUTPUT_DIR" "$RENDERED_SPEC_DIR"
+DO_COLLECTORS=1
+DO_AGENTS=0
+if [ $AGENTS_ONLY -eq 1 ]; then
+  DO_COLLECTORS=0
+  DO_AGENTS=1
+fi
+if [ $BUILD_AGENTS -eq 1 ]; then
+  DO_AGENTS=1
+fi
 
-validate_sftp_flags
-ensure_local_specs
-log "Collectors will be written to $COLLECTOR_OUTPUT_DIR"
+if [ $SPEC_ONLY -eq 1 ] && [ $DO_COLLECTORS -eq 0 ]; then
+  log "Error: --spec-only is only valid when building collectors."
+  exit 1
+fi
 
-rendered_specs=()
-if [ $SPEC_ONLY -eq 1 ]; then
+mkdir -p "$DATA_DIR" "$DATASTORE_DIR" "$RENDERED_SPEC_DIR"
+if [ $DO_COLLECTORS -eq 1 ]; then
+  mkdir -p "$COLLECTOR_OUTPUT_DIR"
+fi
+if [ $DO_AGENTS -eq 1 ]; then
+  mkdir -p "$AGENT_OUTPUT_DIR"
+fi
+
+if [ $DO_COLLECTORS -eq 1 ]; then
+  validate_sftp_flags
+  ensure_local_specs
+  log "Collectors will be written to $COLLECTOR_OUTPUT_DIR"
+
+  rendered_specs=()
+  if [ $SPEC_ONLY -eq 1 ]; then
+    for spec_path in "${SPEC_FILES[@]}"; do
+      rendered_path="$RENDERED_SPEC_DIR/$(basename "$spec_path")"
+      log "Rendering spec with overrides (spec-only): $spec_path -> $rendered_path"
+      render_spec_with_overrides "$spec_path" "$rendered_path"
+      rendered_specs+=("$rendered_path")
+    done
+
+    if [ -n "$SPEC_OUTPUT" ]; then
+      if [ ${#rendered_specs[@]} -eq 1 ]; then
+        mkdir -p "$(dirname "$SPEC_OUTPUT")"
+        cp "${rendered_specs[0]}" "$SPEC_OUTPUT"
+        log "Rendered spec written to $SPEC_OUTPUT"
+      else
+        mkdir -p "$SPEC_OUTPUT"
+        for r in "${rendered_specs[@]}"; do
+          cp "$r" "$SPEC_OUTPUT/"
+        done
+        log "Rendered specs written to directory $SPEC_OUTPUT"
+      fi
+    else
+      log "Rendered specs available under $RENDERED_SPEC_DIR"
+    fi
+    exit 0
+  fi
+fi
+
+if [ $DO_COLLECTORS -eq 1 ] || [ $DO_AGENTS -eq 1 ]; then
+  ensure_velo_binary
+fi
+
+if [ $DO_COLLECTORS -eq 1 ]; then
+  need_linux=0
+  need_windows=0
+  need_unknown=0
+
+  for spec_path in "${SPEC_FILES[@]}"; do
+    spec_os=$(awk -F':' '/^OS[[:space:]]*:/ {gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$spec_path")
+    spec_os_lower=$(echo "${spec_os:-}" | tr '[:upper:]' '[:lower:]')
+    log "Spec OS detected for $spec_path: ${spec_os:-unknown}"
+    case "$spec_os_lower" in
+      linux)
+        need_linux=1
+        ;;
+      windows*)
+        need_windows=1
+        ;;
+      *)
+        need_unknown=1
+        ;;
+    esac
+  done
+
+  if [ $need_unknown -eq 1 ]; then
+    log "Unknown OS detected; fetching both Linux and Windows triage artifacts."
+    ensure_windows_targets
+    ensure_linux_uac
+    ensure_linux_avml
+  else
+    if [ $need_windows -eq 1 ]; then
+      ensure_windows_targets
+    fi
+    if [ $need_linux -eq 1 ]; then
+      ensure_linux_uac
+      ensure_linux_avml
+    fi
+  fi
+
+  rendered_specs=()
   for spec_path in "${SPEC_FILES[@]}"; do
     rendered_path="$RENDERED_SPEC_DIR/$(basename "$spec_path")"
-    log "Rendering spec with overrides (spec-only): $spec_path -> $rendered_path"
+    log "Rendering spec with overrides: $spec_path -> $rendered_path"
     render_spec_with_overrides "$spec_path" "$rendered_path"
     rendered_specs+=("$rendered_path")
   done
 
-  if [ -n "$SPEC_OUTPUT" ]; then
-    if [ ${#rendered_specs[@]} -eq 1 ]; then
-      mkdir -p "$(dirname "$SPEC_OUTPUT")"
-      cp "${rendered_specs[0]}" "$SPEC_OUTPUT"
-      log "Rendered spec written to $SPEC_OUTPUT"
+  for spec_path in "${rendered_specs[@]}"; do
+    log "Building collector for $spec_path"
+    build_output=$("$VELO_BINARY" collector --datastore "$DATASTORE_DIR/" "$spec_path" 2>&1 | tee /dev/stderr)
+    collector_path=$(echo "$build_output" | jq -r '.[].Repacked.Path? // empty' 2>/dev/null || true)
+    if [ -n "$collector_path" ] && [ -f "$collector_path" ]; then
+      mkdir -p "$COLLECTOR_OUTPUT_DIR"
+      mv "$collector_path" "$COLLECTOR_OUTPUT_DIR/"
+      log "Moved collector to $COLLECTOR_OUTPUT_DIR/$(basename "$collector_path")"
     else
-      mkdir -p "$SPEC_OUTPUT"
-      for r in "${rendered_specs[@]}"; do
-        cp "$r" "$SPEC_OUTPUT/"
-      done
-      log "Rendered specs written to directory $SPEC_OUTPUT"
+      log "Warning: Could not detect collector path in output; leaving files in $DATASTORE_DIR"
     fi
-  else
-    log "Rendered specs available under $RENDERED_SPEC_DIR"
-  fi
-  exit 0
+  done
+
+  log "Collectors written to $COLLECTOR_OUTPUT_DIR"
 fi
 
-response=$(fetch_with_retry "https://api.github.com/repos/Velocidex/velociraptor/releases/latest") || exit 1
-
-if [ -z "$response" ]; then
-  log "Error: Empty response from GitHub API"
-  exit 1
+if [ $DO_AGENTS -eq 1 ]; then
+  build_agents
 fi
-
-asset_info=$(echo "$response" | jq -r '[.assets[] | select((.name | test("velociraptor-.*-linux-amd64$")) and (.name | contains("musl") | not)) | {name: .name, url: .browser_download_url}] | sort_by(.name) | last')
-download_url=$(echo "$asset_info" | jq -r '.url')
-asset_name=$(echo "$asset_info" | jq -r '.name')
-
-if [ -z "$download_url" ] || [ "$download_url" == "null" ]; then
-  log "Error: Could not find a Linux AMD64 binary in the latest release"
-  log "Debug - Available assets:"
-  echo "$response" | jq -r '.assets[].name' >&2
-  exit 1
-fi
-
-binary_version=$(echo "$asset_name" | sed -n 's/.*velociraptor-v\([0-9.]*\)-linux-amd64$/\1/p')
-velociraptor_version=${binary_version:-$(echo "$response" | jq -r '.tag_name' | sed 's/^v//')}
-
-if [ -z "$velociraptor_version" ] || [ "$velociraptor_version" == "null" ]; then
-  log "Error: Unable to determine Velociraptor version from asset metadata"
-  exit 1
-fi
-
-log "Velociraptor release version: $velociraptor_version"
-
-stored_version="unknown"
-if [ -f "$VERSION_FILE" ]; then
-  stored_version=$(jq -r '.velociraptor_version // "unknown"' "$VERSION_FILE" 2>/dev/null || echo "unknown")
-fi
-
-if [ -n "${GITHUB_ENV:-}" ]; then
-  echo "VELO_VERSION=$velociraptor_version" >> "$GITHUB_ENV"
-fi
-
-if [ "$stored_version" = "$velociraptor_version" ] && [ -n "${SKIP_IF_VERSION_UNCHANGED:-}" ]; then
-  echo "Velociraptor version unchanged ($velociraptor_version); skipping build."
-  if [ -n "${GITHUB_ENV:-}" ]; then
-    echo "VELO_VERSION_CHANGED=false" >> "$GITHUB_ENV"
-  fi
-  exit 0
-fi
-
-if [ -n "${GITHUB_ENV:-}" ]; then
-  echo "VELO_VERSION_CHANGED=true" >> "$GITHUB_ENV"
-fi
-
-mkdir -p "$DATA_DIR"
-cat <<EOF > "$VERSION_FILE"
-{
-  "velociraptor_version": "$velociraptor_version"
-}
-EOF
-
-log "Downloading Velociraptor binary from: $download_url"
-
-download_with_retry "$download_url" "$VELO_BINARY" || exit 1
-chmod +x "$VELO_BINARY"
-
-need_linux=0
-need_windows=0
-need_unknown=0
-
-for spec_path in "${SPEC_FILES[@]}"; do
-  spec_os=$(awk -F':' '/^OS[[:space:]]*:/ {gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$spec_path")
-  spec_os_lower=$(echo "${spec_os:-}" | tr '[:upper:]' '[:lower:]')
-  log "Spec OS detected for $spec_path: ${spec_os:-unknown}"
-  case "$spec_os_lower" in
-    linux)
-      need_linux=1
-      ;;
-    windows*)
-      need_windows=1
-      ;;
-    *)
-      need_unknown=1
-      ;;
-  esac
-done
-
-if [ $need_unknown -eq 1 ]; then
-  log "Unknown OS detected; fetching both Linux and Windows triage artifacts."
-  ensure_windows_targets
-  ensure_linux_uac
-  ensure_linux_avml
-else
-  if [ $need_windows -eq 1 ]; then
-    ensure_windows_targets
-  fi
-  if [ $need_linux -eq 1 ]; then
-    ensure_linux_uac
-    ensure_linux_avml
-  fi
-fi
-
-rendered_specs=()
-for spec_path in "${SPEC_FILES[@]}"; do
-  rendered_path="$RENDERED_SPEC_DIR/$(basename "$spec_path")"
-  log "Rendering spec with overrides: $spec_path -> $rendered_path"
-  render_spec_with_overrides "$spec_path" "$rendered_path"
-  rendered_specs+=("$rendered_path")
-done
-
-for spec_path in "${rendered_specs[@]}"; do
-  log "Building collector for $spec_path"
-  build_output=$("$VELO_BINARY" collector --datastore "$DATASTORE_DIR/" "$spec_path" 2>&1 | tee /dev/stderr)
-  collector_path=$(echo "$build_output" | jq -r '.[].Repacked.Path? // empty' 2>/dev/null || true)
-  if [ -n "$collector_path" ] && [ -f "$collector_path" ]; then
-    mkdir -p "$COLLECTOR_OUTPUT_DIR"
-    mv "$collector_path" "$COLLECTOR_OUTPUT_DIR/"
-    log "Moved collector to $COLLECTOR_OUTPUT_DIR/$(basename "$collector_path")"
-  else
-    log "Warning: Could not detect collector path in output; leaving files in $DATASTORE_DIR"
-  fi
-done
-
-log "Collectors written to $COLLECTOR_OUTPUT_DIR"

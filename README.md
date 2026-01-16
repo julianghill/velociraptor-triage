@@ -7,6 +7,20 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
 - From the repo root run: `bash createCollectors.sh` (collectors land in `./collectors`, data in `./data`, datastore in `./datastore`; the script moves built collectors out of the datastore for you).
 - Specs are read from `./spec` by default. If none are present, the script fetches them from GitHub (`julianghill/velociraptor-triage` on `main` by default).
 
+## What happens with no flags
+- Uses the repo directory as the workdir.
+- Downloads the Velociraptor Linux binary if `./velociraptor` is missing.
+- Loads specs from `./spec` (or fetches from GitHub if empty).
+- Downloads required artifact definitions (Windows targets, Linux UAC/AVML) as needed.
+- Renders specs without SFTP overrides and builds collectors.
+- Moves built collectors into `./collectors`.
+- Does not build agents unless `--build-agents` or `--agents-only` is provided.
+
+## Tests
+- Smoke test (spec-only render): `bash tests/run_smoke.sh`
+- Agents test (requires env vars): `VELO_BINARY=/path/to/velociraptor SERVER_CONFIG=/path/to/server.config.yaml bash tests/run_agents.sh`
+- Collectors test: `bash tests/run_collectors.sh` (optionally set `SPEC_FILE=spec/yourSpec.yaml`)
+
 ## Examples
 - Build all specs with SFTP overrides and place collectors in a custom folder:
   ```bash
@@ -31,13 +45,29 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
   ```bash
   SPEC_FILE=spec/winpmemRemoteSpec.yaml bash createCollectors.sh
   ```
+- Build Velociraptor agents only (Linux + Windows) using an existing server config:
+  ```bash
+  bash createCollectors.sh \
+    --agents-only \
+    --velo-binary /path/to/velociraptor \
+    --server-config /path/to/server.config.yaml \
+    --agent-output-dir ./agents
+  ```
 
 ## New CLI flags for automation
 - `--spec-only`: Render specs (fetching them if missing) with overrides and exit—no collector build. Leaves rendered specs in `./rendered_specs` by default; use `--spec-output` to copy them elsewhere.
+- `--build-agents`: Build Velociraptor client agents (Linux + Windows) alongside collectors.
+- `--agents-only`: Build agents only (skip collectors/specs).
 - `--sftp-host <host[:port]>`, `--sftp-user <user>`, `--sftp-key-path <path>`, `--sftp-remote-dir <dir>`: Inject SFTP settings into SFTP-based specs. If any are provided, all four are required.
 - `--workdir <path>`: Working directory (default: repo directory). Targets, datastore, rendered specs, and binary live here.
 - `--output-dir <path>`: Where collectors are written (default: `<workdir>/collectors`).
 - `--spec-output <path>`: Where to write rendered specs in `--spec-only` mode. If multiple specs are rendered, provide a directory path.
+- `--velo-binary <path>`: Path to a Velociraptor CLI binary to use for builds.
+- `--server-config <path>`: Path to `server.config.yaml` for agent repacking.
+- `--agent-output-dir <path>`: Where to write repacked agents (default: `<workdir>/agents`).
+- `--agent-org <name>`: Org name for the client config (default: `root`).
+- `--agent-linux-binary <path>`: Linux Velociraptor binary to repack (default: `--velo-binary`).
+- `--agent-windows-binary <path>`: Windows Velociraptor binary to repack (downloaded if missing).
 
 ## Bring your own specs
 - Drop your `.yaml`/`.yml` spec files into `./spec`, or point `SPEC_DIR` to a different folder containing your specs.
