@@ -42,4 +42,9 @@ if [ ! -f "$AGENT_OUTPUT_DIR/velociraptor-client-windows-amd64.exe" ]; then
   exit 1
 fi
 
+if [ ! -f "$AGENT_OUTPUT_DIR/velociraptor-client-windows-amd64.msi" ]; then
+  log "Error: missing Windows MSI agent at $AGENT_OUTPUT_DIR/velociraptor-client-windows-amd64.msi"
+  exit 1
+fi
+
 log "Agents test completed"

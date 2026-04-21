@@ -15,6 +15,7 @@ bash tests/run_agents.sh
 ```
 
 By default it expects `./velociraptor` and `./server.config.yaml`. Override with `VELO_BINARY` and `SERVER_CONFIG` as needed.
+It validates Linux, Windows `.exe`, and Windows `.msi` agent outputs.
 
 ## Collector build test
 ```bash

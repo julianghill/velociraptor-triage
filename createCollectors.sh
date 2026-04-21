@@ -21,6 +21,7 @@ AGENT_OUTPUT_DIR="${AGENT_OUTPUT_DIR:-}"
 AGENT_ORG="${AGENT_ORG:-root}"
 AGENT_LINUX_BINARY="${AGENT_LINUX_BINARY:-}"
 AGENT_WINDOWS_BINARY="${AGENT_WINDOWS_BINARY:-}"
+AGENT_WINDOWS_MSI="${AGENT_WINDOWS_MSI:-}"
 SERVER_CONFIG="${SERVER_CONFIG:-}"
 SFTP_HOST=""
 SFTP_USER=""
@@ -73,6 +74,7 @@ Usage: createCollectors.sh [flags]
   --agent-org <name>            Org name for client config (default: root)
   --agent-linux-binary <path>   Linux Velociraptor binary to repack (default: --velo-binary)
   --agent-windows-binary <path> Windows Velociraptor binary to repack (downloaded if missing)
+  --agent-windows-msi <path>    Windows Velociraptor MSI to repack (downloaded if missing)
   -h | --help                   Show this help
 EOF
   exit 1
@@ -141,6 +143,10 @@ while [[ $# -gt 0 ]]; do
       AGENT_WINDOWS_BINARY="${2:-}"; shift
       [ -n "$AGENT_WINDOWS_BINARY" ] || usage
       ;;
+    --agent-windows-msi)
+      AGENT_WINDOWS_MSI="${2:-}"; shift
+      [ -n "$AGENT_WINDOWS_MSI" ] || usage
+      ;;
     -h|--help)
       usage
       ;;
@@ -184,6 +190,9 @@ if [ -n "$AGENT_LINUX_BINARY" ]; then
 fi
 if [ -n "$AGENT_WINDOWS_BINARY" ]; then
   AGENT_WINDOWS_BINARY=$(resolve_path "$AGENT_WINDOWS_BINARY")
+fi
+if [ -n "$AGENT_WINDOWS_MSI" ]; then
+  AGENT_WINDOWS_MSI=$(resolve_path "$AGENT_WINDOWS_MSI")
 fi
 
 SFTP_ENDPOINT="$SFTP_HOST"
@@ -383,6 +392,29 @@ ensure_agent_windows_binary() {
   download_with_retry "$windows_url" "$AGENT_WINDOWS_BINARY" || exit 1
 }
 
+ensure_agent_windows_msi() {
+  if [ -n "$AGENT_WINDOWS_MSI" ] && [ -f "$AGENT_WINDOWS_MSI" ]; then
+    return 0
+  fi
+
+  fetch_release_info
+  if [ -z "$velociraptor_version" ]; then
+    log "Error: Velociraptor version not set; cannot download Windows agent MSI."
+    exit 1
+  fi
+
+  windows_msi_name="velociraptor-v${velociraptor_version}-windows-amd64.msi"
+  windows_msi_url=$(get_asset_url_by_name "$windows_msi_name")
+  if [ -z "$windows_msi_url" ] || [ "$windows_msi_url" == "null" ]; then
+    log "Error: Could not find Windows MSI $windows_msi_name in release assets. Provide --agent-windows-msi."
+    exit 1
+  fi
+
+  AGENT_WINDOWS_MSI="$WORKDIR/$windows_msi_name"
+  log "Downloading Windows agent MSI from: $windows_msi_url"
+  download_with_retry "$windows_msi_url" "$AGENT_WINDOWS_MSI" || exit 1
+}
+
 build_agents() {
   if [ ! -f "$SERVER_CONFIG" ]; then
     log "Error: server.config.yaml not found at $SERVER_CONFIG"
@@ -404,6 +436,7 @@ build_agents() {
   fi
 
   ensure_agent_windows_binary
+  ensure_agent_windows_msi
 
   mkdir -p "$AGENT_OUTPUT_DIR"
   client_config="$AGENT_OUTPUT_DIR/client.${AGENT_ORG}.config.yaml"
@@ -412,12 +445,16 @@ build_agents() {
 
   linux_out="$AGENT_OUTPUT_DIR/velociraptor-client-linux-amd64"
   windows_out="$AGENT_OUTPUT_DIR/velociraptor-client-windows-amd64.exe"
+  windows_msi_out="$AGENT_OUTPUT_DIR/velociraptor-client-windows-amd64.msi"
 
   log "Repacking Linux client binary -> $linux_out"
   "$VELO_BINARY" config repack --exe "$AGENT_LINUX_BINARY" "$client_config" "$linux_out"
 
   log "Repacking Windows client binary -> $windows_out"
   "$VELO_BINARY" config repack --exe "$AGENT_WINDOWS_BINARY" "$client_config" "$windows_out"
+
+  log "Repacking Windows client MSI -> $windows_msi_out"
+  "$VELO_BINARY" config repack --msi "$AGENT_WINDOWS_MSI" "$client_config" "$windows_msi_out"
 
   log "Agents written to $AGENT_OUTPUT_DIR"
 }

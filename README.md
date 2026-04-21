@@ -45,7 +45,7 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
   ```bash
   SPEC_FILE=spec/winpmemRemoteSpec.yaml bash createCollectors.sh
   ```
-- Build Velociraptor agents only (Linux + Windows) using an existing server config:
+- Build Velociraptor agents only (Linux + Windows EXE + Windows MSI) using an existing server config:
   ```bash
   bash createCollectors.sh \
     --agents-only \
@@ -56,7 +56,7 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
 
 ## New CLI flags for automation
 - `--spec-only`: Render specs (fetching them if missing) with overrides and exit—no collector build. Leaves rendered specs in `./rendered_specs` by default; use `--spec-output` to copy them elsewhere.
-- `--build-agents`: Build Velociraptor client agents (Linux + Windows) alongside collectors.
+- `--build-agents`: Build Velociraptor client agents (Linux + Windows EXE + Windows MSI) alongside collectors.
 - `--agents-only`: Build agents only (skip collectors/specs).
 - `--sftp-host <host[:port]>`, `--sftp-user <user>`, `--sftp-key-path <path>`, `--sftp-remote-dir <dir>`: Inject SFTP settings into SFTP-based specs. If any are provided, all four are required.
 - `--workdir <path>`: Working directory (default: repo directory). Targets, datastore, rendered specs, and binary live here.
@@ -68,6 +68,7 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
 - `--agent-org <name>`: Org name for the client config (default: `root`).
 - `--agent-linux-binary <path>`: Linux Velociraptor binary to repack (default: `--velo-binary`).
 - `--agent-windows-binary <path>`: Windows Velociraptor binary to repack (downloaded if missing).
+- `--agent-windows-msi <path>`: Windows Velociraptor MSI to repack (downloaded if missing).
 
 ## Bring your own specs
 - Drop your `.yaml`/`.yml` spec files into `./spec`, or point `SPEC_DIR` to a different folder containing your specs.
