@@ -45,6 +45,10 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
   ```bash
   SPEC_FILE=spec/winpmemRemoteSpec.yaml bash createCollectors.sh
   ```
+- Build the local EVTX collector (`spec/evtxSpec.yaml`) so collection ZIPs are dropped locally on the endpoint:
+  ```bash
+  SPEC_FILE=spec/evtxSpec.yaml bash createCollectors.sh --output-dir ./collectors
+  ```
 - Build Velociraptor agents only (Linux + Windows EXE + Windows MSI) using an existing server config:
   ```bash
   bash createCollectors.sh \
@@ -72,6 +76,7 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
 
 ## Bring your own specs
 - Drop your `.yaml`/`.yml` spec files into `./spec`, or point `SPEC_DIR` to a different folder containing your specs.
+- Included examples now include both remote EVTX (`spec/evtxRemoteSpec.yaml`) and local ZIP EVTX (`spec/evtxSpec.yaml`).
 - To build a single spec only, set `SPEC_FILE=/path/to/your/spec.yaml`.
 - To fall back to a different GitHub source when local specs are missing, set `SPEC_SOURCE_REPO="owner/repo"` and optionally `SPEC_SOURCE_REF="branch-or-tag"`.
 
@@ -81,6 +86,10 @@ This repo ships a helper script that downloads the latest Velociraptor binary, p
 - `SPEC_FILE`: Build only this spec file (skips directory scan).
 - `SPEC_SOURCE_REPO` / `SPEC_SOURCE_REF`: Remote repo/ref used to fetch specs if none are local (defaults to this repo, `main`).
 - `DATA_DIR`, `DATASTORE_DIR`: Override the working folders used for version tracking and artifact downloads.
+
+## Notes
+- Collector output names now use `%Hostname%` in the shipped specs (instead of `%FQDN%`) to avoid DNS-based names such as `host.docker.internal`.
+- Offline collection output is a Velociraptor collection container ZIP. Some environments handle these better with `7-Zip` or `velociraptor unzip` than with the built-in Windows Explorer ZIP handler.
 
 ## Credits
 - Inspired by the triage.zip workflow from Digital-Defense-Institute: https://github.com/Digital-Defense-Institute/triage.zip
