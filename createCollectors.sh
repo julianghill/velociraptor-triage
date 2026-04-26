@@ -574,9 +574,29 @@ fetch_specs_from_github() {
 render_spec_with_overrides() {
   local src="$1"
   local dst="$2"
+  local source_target=""
+  local source_target_upper=""
 
   mkdir -p "$(dirname "$dst")"
   if [ $DO_SFTP_INJECT -ne 1 ]; then
+    cp "$src" "$dst"
+    return
+  fi
+
+  # Only apply SFTP overrides to specs that are already SFTP-based.
+  # This prevents local ZIP specs from being unintentionally converted.
+  source_target=$(awk -F':' '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*Target[[:space:]]*:/ {
+      val=$2
+      gsub(/^[ \t]+|[ \t]+$/, "", val)
+      print val
+      exit
+    }
+  ' "$src")
+  source_target_upper=$(echo "${source_target:-}" | tr '[:lower:]' '[:upper:]')
+  if [ "$source_target_upper" != "SFTP" ]; then
+    log "Skipping SFTP override for non-SFTP spec: $src (Target: ${source_target:-unknown})"
     cp "$src" "$dst"
     return
   fi
